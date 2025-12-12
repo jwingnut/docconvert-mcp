@@ -6,8 +6,10 @@ FastMCP server for universal document format conversion. Convert PDFs, Word docs
 
 - **Universal conversion** - Convert between 20+ document formats
 - **PDF support** - Uses pdf2docx for accurate PDF extraction, then pandoc
+- **OCR support** - Extract text from scanned PDFs with layout preservation
+- **GROBID integration** - Extract metadata and references from academic PDFs
 - **Batch processing** - Convert entire directories with mixed formats
-- **Smart parallelism** - Parallel processing for non-PDF files (PDFs use sequential due to pdf2docx limitations)
+- **Parallel processing** - Subprocess isolation for true PDF parallelism
 - **Recursive mode** - Process nested folder structures
 - **Format filtering** - Convert only specific file types (e.g., just PDFs)
 
@@ -19,6 +21,8 @@ Claude Code
     └── DocConvert MCP Server (this)
             │
             ├── pdf2docx (PDF → DOCX extraction)
+            ├── PyMuPDF (OCR with layout preservation)
+            ├── GROBID (metadata + references extraction)
             │
             └── pandoc (all other conversions)
 ```
@@ -381,12 +385,46 @@ pip install ocrmypdf
 sudo apt install tesseract-ocr
 ```
 
+### GROBID for Academic PDFs
+
+Extract structured metadata and references from scholarly documents using GROBID:
+
+```python
+# Extract metadata (title, authors, abstract, DOI, etc.)
+extract_metadata("/path/to/paper.pdf")
+# Returns: {title, authors, abstract, keywords, date, doi, affiliations}
+
+# Extract bibliography/references
+extract_references("/path/to/paper.pdf")
+# Returns: [{title, authors, year, journal, volume, pages, doi}, ...]
+
+# Extract full document structure
+extract_fulltext("/path/to/paper.pdf")
+# Returns: metadata + all references
+
+# Save as TEI XML
+extract_fulltext("/path/to/paper.pdf", "/path/to/paper.tei.xml")
+```
+
+**GROBID Requirements:**
+```bash
+# Start GROBID server (Docker)
+docker run -d --name grobid -p 8070:8070 lfoppiano/grobid:0.8.0
+
+# Install client
+pip install grobid-client-python
+
+# Optional: Set custom server URL
+export GROBID_SERVER=http://your-server:8070
+```
+
 ### Limitations
 
 - Complex PDF layouts may not convert perfectly
 - Some formatting may be lost in conversion
 - Parallel PDF processing requires adequate system resources
 - OCR quality depends on scan quality and Tesseract's capabilities
+- GROBID requires a running server (local or remote)
 
 ## Files
 

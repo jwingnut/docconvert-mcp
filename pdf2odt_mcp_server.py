@@ -29,6 +29,17 @@ try:
 except ImportError:
     HAS_PYMUPDF = False
 
+# Optional: GROBID for metadata and reference extraction
+try:
+    from grobid_client.grobid_client import GrobidClient
+    from bs4 import BeautifulSoup
+    HAS_GROBID = True
+except ImportError:
+    HAS_GROBID = False
+
+# Default GROBID server URL (can be overridden)
+GROBID_SERVER = os.environ.get("GROBID_SERVER", "http://localhost:8070")
+
 mcp = FastMCP("docconvert")
 
 # Supported input extensions
@@ -667,6 +678,366 @@ def list_convertible(path: str, recursive: bool = False) -> dict:
         "count": len(files),
         "by_format": by_format
     }
+
+
+def _parse_tei_metadata(tei_xml: str) -> dict:
+    """Parse TEI XML from GROBID to extract metadata."""
+    soup = BeautifulSoup(tei_xml, 'xml')
+
+    metadata = {}
+
+    # Title
+    title_elem = soup.find('title', {'type': 'main'})
+    if title_elem:
+        metadata['title'] = title_elem.get_text(strip=True)
+
+    # Authors
+    authors = []
+    for author in soup.find_all('author'):
+        author_info = {}
+        persname = author.find('persName')
+        if persname:
+            forename = persname.find('forename')
+            surname = persname.find('surname')
+            if forename:
+                author_info['first_name'] = forename.get_text(strip=True)
+            if surname:
+                author_info['last_name'] = surname.get_text(strip=True)
+            if forename and surname:
+                author_info['name'] = f"{forename.get_text(strip=True)} {surname.get_text(strip=True)}"
+
+        # Affiliation
+        affiliation = author.find('affiliation')
+        if affiliation:
+            org = affiliation.find('orgName')
+            if org:
+                author_info['affiliation'] = org.get_text(strip=True)
+
+        # Email
+        email = author.find('email')
+        if email:
+            author_info['email'] = email.get_text(strip=True)
+
+        if author_info:
+            authors.append(author_info)
+
+    if authors:
+        metadata['authors'] = authors
+
+    # Abstract
+    abstract = soup.find('abstract')
+    if abstract:
+        # Get all paragraphs in abstract
+        paragraphs = abstract.find_all('p')
+        if paragraphs:
+            metadata['abstract'] = ' '.join(p.get_text(strip=True) for p in paragraphs)
+        else:
+            metadata['abstract'] = abstract.get_text(strip=True)
+
+    # Keywords
+    keywords = soup.find('keywords')
+    if keywords:
+        terms = keywords.find_all('term')
+        if terms:
+            metadata['keywords'] = [t.get_text(strip=True) for t in terms]
+
+    # Publication date
+    date = soup.find('date', {'type': 'published'})
+    if date:
+        metadata['date'] = date.get('when', date.get_text(strip=True))
+
+    # DOI
+    idno = soup.find('idno', {'type': 'DOI'})
+    if idno:
+        metadata['doi'] = idno.get_text(strip=True)
+
+    return metadata
+
+
+def _parse_tei_references(tei_xml: str) -> list:
+    """Parse TEI XML from GROBID to extract references."""
+    soup = BeautifulSoup(tei_xml, 'xml')
+
+    references = []
+    for bibl in soup.find_all('biblStruct'):
+        ref = {}
+
+        # Title
+        title = bibl.find('title', {'level': 'a'}) or bibl.find('title')
+        if title:
+            ref['title'] = title.get_text(strip=True)
+
+        # Authors
+        authors = []
+        for author in bibl.find_all('author'):
+            persname = author.find('persName')
+            if persname:
+                forename = persname.find('forename')
+                surname = persname.find('surname')
+                if forename and surname:
+                    authors.append(f"{forename.get_text(strip=True)} {surname.get_text(strip=True)}")
+                elif surname:
+                    authors.append(surname.get_text(strip=True))
+        if authors:
+            ref['authors'] = authors
+
+        # Year
+        date = bibl.find('date')
+        if date:
+            ref['year'] = date.get('when', date.get_text(strip=True))[:4] if date.get('when') else date.get_text(strip=True)
+
+        # Journal/Source
+        journal = bibl.find('title', {'level': 'j'})
+        if journal:
+            ref['journal'] = journal.get_text(strip=True)
+
+        # Volume, issue, pages
+        vol = bibl.find('biblScope', {'unit': 'volume'})
+        if vol:
+            ref['volume'] = vol.get_text(strip=True)
+
+        issue = bibl.find('biblScope', {'unit': 'issue'})
+        if issue:
+            ref['issue'] = issue.get_text(strip=True)
+
+        pages = bibl.find('biblScope', {'unit': 'page'})
+        if pages:
+            ref['pages'] = pages.get('from', '') + ('-' + pages.get('to', '') if pages.get('to') else '')
+            if not ref['pages']:
+                ref['pages'] = pages.get_text(strip=True)
+
+        # DOI
+        doi = bibl.find('idno', {'type': 'DOI'})
+        if doi:
+            ref['doi'] = doi.get_text(strip=True)
+
+        if ref:
+            references.append(ref)
+
+    return references
+
+
+@mcp.tool
+def extract_metadata(input: str, grobid_server: str = None) -> dict:
+    """
+    Extract metadata from a PDF using GROBID.
+
+    Extracts title, authors, abstract, keywords, date, DOI, and affiliations
+    from academic/scholarly PDFs.
+
+    Args:
+        input: Input PDF file path
+        grobid_server: GROBID server URL (default: http://localhost:8070 or GROBID_SERVER env var)
+
+    Returns:
+        dict with extracted metadata
+
+    Examples:
+        extract_metadata("/path/to/paper.pdf")
+        extract_metadata("/path/to/paper.pdf", grobid_server="http://grobid.example.com:8070")
+
+    Requires:
+        - GROBID server running (docker run -p 8070:8070 lfoppiano/grobid:0.8.0)
+        - pip install grobid-client-python
+    """
+    if not HAS_GROBID:
+        return {"success": False, "error": "grobid-client-python not installed. Run: pip install grobid-client-python"}
+
+    src = Path(input)
+    if not src.exists():
+        return {"success": False, "error": f"Input not found: {src}"}
+
+    if src.suffix.lower() != '.pdf':
+        return {"success": False, "error": "Input must be a PDF file"}
+
+    server = grobid_server or GROBID_SERVER
+
+    try:
+        client = GrobidClient(grobid_server=server, check_server=True)
+    except Exception as e:
+        return {"success": False, "error": f"Cannot connect to GROBID server at {server}: {str(e)}"}
+
+    try:
+        # Process header (metadata)
+        status, tei_xml = client.process_pdf(
+            service="processHeaderDocument",
+            pdf_file=str(src),
+            generateIDs=False,
+            consolidate_header=True,
+            consolidate_citations=False,
+            include_raw_citations=False,
+            include_raw_affiliations=True,
+            tei_coordinates=False,
+            segment_sentences=False
+        )
+
+        if status != 200:
+            return {"success": False, "error": f"GROBID returned status {status}"}
+
+        metadata = _parse_tei_metadata(tei_xml)
+        metadata['success'] = True
+        metadata['source'] = str(src)
+        return metadata
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool
+def extract_references(input: str, grobid_server: str = None) -> dict:
+    """
+    Extract bibliographic references from a PDF using GROBID.
+
+    Parses the reference section of academic PDFs and returns structured
+    citation data including authors, title, journal, year, DOI, etc.
+
+    Args:
+        input: Input PDF file path
+        grobid_server: GROBID server URL (default: http://localhost:8070 or GROBID_SERVER env var)
+
+    Returns:
+        dict with list of extracted references
+
+    Examples:
+        extract_references("/path/to/paper.pdf")
+
+    Requires:
+        - GROBID server running (docker run -p 8070:8070 lfoppiano/grobid:0.8.0)
+        - pip install grobid-client-python
+    """
+    if not HAS_GROBID:
+        return {"success": False, "error": "grobid-client-python not installed. Run: pip install grobid-client-python"}
+
+    src = Path(input)
+    if not src.exists():
+        return {"success": False, "error": f"Input not found: {src}"}
+
+    if src.suffix.lower() != '.pdf':
+        return {"success": False, "error": "Input must be a PDF file"}
+
+    server = grobid_server or GROBID_SERVER
+
+    try:
+        client = GrobidClient(grobid_server=server, check_server=True)
+    except Exception as e:
+        return {"success": False, "error": f"Cannot connect to GROBID server at {server}: {str(e)}"}
+
+    try:
+        # Process references
+        status, tei_xml = client.process_pdf(
+            service="processReferences",
+            pdf_file=str(src),
+            generateIDs=False,
+            consolidate_header=False,
+            consolidate_citations=True,
+            include_raw_citations=True,
+            include_raw_affiliations=False,
+            tei_coordinates=False,
+            segment_sentences=False
+        )
+
+        if status != 200:
+            return {"success": False, "error": f"GROBID returned status {status}"}
+
+        references = _parse_tei_references(tei_xml)
+        return {
+            "success": True,
+            "source": str(src),
+            "count": len(references),
+            "references": references
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool
+def extract_fulltext(input: str, output: str = None, grobid_server: str = None) -> dict:
+    """
+    Extract full structured text from a PDF using GROBID.
+
+    Returns the complete document structure including metadata, sections,
+    paragraphs, figures, tables, and references as TEI XML or parsed content.
+
+    Args:
+        input: Input PDF file path
+        output: Optional output file path for TEI XML. If not specified, returns parsed content.
+        grobid_server: GROBID server URL (default: http://localhost:8070 or GROBID_SERVER env var)
+
+    Returns:
+        dict with structured document content or path to TEI XML file
+
+    Examples:
+        # Get parsed content
+        extract_fulltext("/path/to/paper.pdf")
+
+        # Save TEI XML
+        extract_fulltext("/path/to/paper.pdf", "/path/to/paper.tei.xml")
+
+    Requires:
+        - GROBID server running (docker run -p 8070:8070 lfoppiano/grobid:0.8.0)
+        - pip install grobid-client-python
+    """
+    if not HAS_GROBID:
+        return {"success": False, "error": "grobid-client-python not installed. Run: pip install grobid-client-python"}
+
+    src = Path(input)
+    if not src.exists():
+        return {"success": False, "error": f"Input not found: {src}"}
+
+    if src.suffix.lower() != '.pdf':
+        return {"success": False, "error": "Input must be a PDF file"}
+
+    server = grobid_server or GROBID_SERVER
+
+    try:
+        client = GrobidClient(grobid_server=server, check_server=True)
+    except Exception as e:
+        return {"success": False, "error": f"Cannot connect to GROBID server at {server}: {str(e)}"}
+
+    try:
+        # Process full document
+        status, tei_xml = client.process_pdf(
+            service="processFulltextDocument",
+            pdf_file=str(src),
+            generateIDs=True,
+            consolidate_header=True,
+            consolidate_citations=True,
+            include_raw_citations=True,
+            include_raw_affiliations=True,
+            tei_coordinates=False,
+            segment_sentences=True
+        )
+
+        if status != 200:
+            return {"success": False, "error": f"GROBID returned status {status}"}
+
+        # If output path specified, save TEI XML
+        if output:
+            dst = Path(output)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(tei_xml)
+            return {
+                "success": True,
+                "source": str(src),
+                "output": str(dst),
+                "format": "tei-xml"
+            }
+
+        # Otherwise return parsed content
+        metadata = _parse_tei_metadata(tei_xml)
+        references = _parse_tei_references(tei_xml)
+
+        return {
+            "success": True,
+            "source": str(src),
+            "metadata": metadata,
+            "references": references,
+            "reference_count": len(references)
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 if __name__ == "__main__":
