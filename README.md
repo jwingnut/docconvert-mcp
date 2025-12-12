@@ -334,36 +334,35 @@ PDF parallelism uses subprocess isolation: each PDF conversion runs in a complet
 
 ### OCR for Scanned PDFs
 
-Two OCR modes available:
-
-**Basic OCR (`ocr=True`)** - Fast, good for simple text extraction:
+**Standard OCR (`ocr=True`)** - Preserves tables and layout (recommended):
 ```python
-convert(
-    input="/path/to/scanned.pdf",
-    output="/path/to/output.txt",
-    format="txt",
-    ocr=True
-)
-```
-
-**Layout-preserving OCR (`ocr_layout=True`)** - Better for tables and complex layouts:
-```python
-# Best for documents with tables
+# Best quality - preserves tables and structure
 convert(
     input="/path/to/scanned.pdf",
     output="/path/to/output.md",
     format="markdown",
-    ocr_layout=True
+    ocr=True
 )
 
-# Batch OCR with layout preservation
+# Batch OCR conversion
 convert(
     input="/path/to/scanned_docs/",
     output="/path/to/output/",
     format="markdown",
     filter="pdf",
-    ocr_layout=True,
+    ocr=True,
     recursive=True
+)
+```
+
+**Fast OCR (`ocr=True, ocr_fast=True`)** - Simpler, loses layout:
+```python
+convert(
+    input="/path/to/scanned.pdf",
+    output="/path/to/output.txt",
+    format="txt",
+    ocr=True,
+    ocr_fast=True
 )
 ```
 
@@ -374,12 +373,12 @@ ocr_document("/path/to/scanned.pdf", "/path/to/searchable.pdf")
 
 **OCR Requirements:**
 ```bash
-# Basic OCR
+# Standard OCR (recommended)
+pip install pymupdf4llm
+
+# Fast OCR (optional)
 pip install ocrmypdf
 sudo apt install tesseract-ocr
-
-# Layout-preserving OCR (recommended)
-pip install pymupdf4llm
 ```
 
 ### Limitations

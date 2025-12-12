@@ -149,7 +149,7 @@ def ocr_with_layout(src: Path, dst: Path, fmt: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False, ocr_layout: bool = False) -> dict:
+def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False, ocr_fast: bool = False) -> dict:
     """Convert a single file to target format (in-process, for non-PDFs or sequential)."""
     fmt = fmt.lower()
     fmt = {"md": "markdown", "txt": "plain", "tex": "latex"}.get(fmt, fmt)
@@ -157,12 +157,12 @@ def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False, ocr_layout: 
 
     try:
         if src.suffix.lower() == '.pdf':
-            # OCR with layout preservation (PyMuPDF) - best for tables
-            if ocr_layout:
+            # OCR with layout preservation (PyMuPDF) - default OCR mode
+            if ocr and not ocr_fast:
                 return ocr_with_layout(src, dst, fmt)
 
-            # Basic OCR (ocrmypdf + pdftotext)
-            if ocr:
+            # Fast OCR (ocrmypdf + pdftotext) - simpler but loses layout
+            if ocr_fast:
                 ocr_result = ocr_pdf(src)
                 if not ocr_result.get("success"):
                     return ocr_result
@@ -276,7 +276,7 @@ except Exception as e:
 
 def _convert_task(args: tuple) -> dict:
     """Worker function for parallel conversion (non-PDF)."""
-    src_file, out_file, fmt, overwrite, ocr, ocr_layout = args
+    src_file, out_file, fmt, overwrite, ocr, ocr_fast = args
 
     # Skip if output exists and overwrite is False
     if not overwrite and out_file.exists():
@@ -289,7 +289,7 @@ def _convert_task(args: tuple) -> dict:
         }
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    result = convert_file(src_file, out_file, fmt, ocr=ocr, ocr_layout=ocr_layout)
+    result = convert_file(src_file, out_file, fmt, ocr=ocr, ocr_fast=ocr_fast)
     return {
         "input": str(src_file),
         "input_format": src_file.suffix.lower(),
@@ -302,7 +302,7 @@ def _convert_task(args: tuple) -> dict:
 
 def _convert_pdf_task(args: tuple) -> dict:
     """Worker function for parallel PDF conversion using subprocess isolation."""
-    src_file, out_file, fmt, overwrite, ocr, ocr_layout = args
+    src_file, out_file, fmt, overwrite, ocr, ocr_fast = args
 
     # Skip if output exists and overwrite is False
     if not overwrite and out_file.exists():
@@ -316,11 +316,11 @@ def _convert_pdf_task(args: tuple) -> dict:
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # For ocr_layout, use in-process PyMuPDF (can't easily subprocess)
-    if ocr_layout:
+    # For OCR with layout (default), use in-process PyMuPDF
+    if ocr and not ocr_fast:
         result = ocr_with_layout(src_file, out_file, fmt)
     else:
-        result = convert_pdf_subprocess(src_file, out_file, fmt, ocr=ocr)
+        result = convert_pdf_subprocess(src_file, out_file, fmt, ocr=ocr_fast)
     return {
         "input": str(src_file),
         "input_format": src_file.suffix.lower(),
@@ -332,7 +332,7 @@ def _convert_pdf_task(args: tuple) -> dict:
 
 
 @mcp.tool
-def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True, ocr: bool = False, ocr_layout: bool = False) -> dict:
+def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True, ocr: bool = False, ocr_fast: bool = False) -> dict:
     """
     Convert document(s) to a single output format.
 
@@ -348,10 +348,10 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         parallel: Number of parallel workers (default 1 = sequential). For PDFs, uses subprocess isolation
                   to bypass pdf2docx internal locking and achieve true parallelism. Requires adequate CPU/RAM.
         overwrite: If True (default), overwrite existing output files. If False, skip files that already exist.
-        ocr: If True, run basic OCR on scanned PDFs (ocrmypdf + pdftotext). Fast but loses layout.
-             Requires: pip install ocrmypdf, apt install tesseract-ocr
-        ocr_layout: If True, run OCR with layout preservation using PyMuPDF. Better for tables and complex
-                    layouts but slower. Requires: pip install pymupdf4llm. Overrides ocr parameter.
+        ocr: If True, run OCR on scanned PDFs using PyMuPDF. Preserves tables and layout.
+             Requires: pip install pymupdf4llm
+        ocr_fast: If True (with ocr=True), use fast OCR mode (ocrmypdf + pdftotext). Faster but loses layout.
+                  Requires: pip install ocrmypdf, apt install tesseract-ocr
 
     Returns:
         Conversion result with output path(s)
@@ -360,14 +360,14 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         # Single file
         convert("/path/to/doc.pdf", "/path/to/doc.odt", "odt")
 
-        # Scanned PDF with basic OCR (fast)
-        convert("/path/to/scanned.pdf", "/path/to/scanned.txt", "txt", ocr=True)
+        # Scanned PDF with OCR (preserves tables and layout)
+        convert("/path/to/scanned.pdf", "/path/to/scanned.md", "markdown", ocr=True)
 
-        # Scanned PDF with layout-preserving OCR (better for tables)
-        convert("/path/to/scanned.pdf", "/path/to/scanned.md", "markdown", ocr_layout=True)
+        # Scanned PDF with fast OCR (simpler, loses layout)
+        convert("/path/to/scanned.pdf", "/path/to/scanned.txt", "txt", ocr=True, ocr_fast=True)
 
-        # Batch OCR conversion with layout preservation
-        convert("/path/to/scanned_docs/", "/path/to/output/", "markdown", filter="pdf", ocr_layout=True, recursive=True)
+        # Batch OCR conversion
+        convert("/path/to/scanned_docs/", "/path/to/output/", "markdown", filter="pdf", ocr=True, recursive=True)
 
         # Directory - parallel PDF conversion (4 workers) - requires sufficient CPU/RAM
         convert("/path/to/docs/", "/path/to/md_output/", "markdown", filter="pdf", recursive=True, parallel=4)
@@ -395,10 +395,10 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         if not overwrite and dst.exists():
             return {"success": True, "output": str(dst), "skipped": True, "message": "Output file exists, skipped"}
 
-        result = convert_file(src, dst, fmt, ocr=ocr, ocr_layout=ocr_layout)
+        result = convert_file(src, dst, fmt, ocr=ocr, ocr_fast=ocr_fast)
         result["skipped"] = False
-        if (ocr or ocr_layout) and src.suffix.lower() == '.pdf':
-            result["ocr"] = "layout" if ocr_layout else True
+        if ocr and src.suffix.lower() == '.pdf':
+            result["ocr"] = "fast" if ocr_fast else True
         return result
 
     # Directory conversion
@@ -430,7 +430,7 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
     for f in sorted(files):
         rel_path = f.relative_to(src)
         out_file = dst / rel_path.with_suffix(ext)
-        tasks.append((f, out_file, fmt, overwrite, ocr, ocr_layout))
+        tasks.append((f, out_file, fmt, overwrite, ocr, ocr_fast))
 
     results = []
     converted = 0
@@ -556,10 +556,8 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         response["skipped"] = skipped
     if len(pdf_tasks) > 0:
         response["pdf_files"] = len(pdf_tasks)
-        if ocr_layout:
-            response["ocr"] = "layout"
-        elif ocr:
-            response["ocr"] = True
+        if ocr:
+            response["ocr"] = "fast" if ocr_fast else True
         if num_workers > 1 and len(pdf_tasks) > 1:
             response["pdf_parallel"] = True
             response["pdf_workers"] = num_workers
