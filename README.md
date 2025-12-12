@@ -117,12 +117,24 @@ convert(
 | `parallel` | int | Number of parallel workers (default 1 = sequential, max 16) |
 | `overwrite` | bool | If True (default), overwrite existing files. If False, skip existing. |
 
-**Parallel Processing (non-PDF files only):**
+**Parallel Processing:**
 
-PDF files are always processed sequentially because pdf2docx has internal locking that prevents parallelism.
-Non-PDF files (markdown, docx, html, etc.) can be processed in parallel:
+Parallel processing is available for all file types. PDF files use subprocess isolation to bypass pdf2docx's internal locking and achieve true parallelism. Requires adequate CPU and RAM.
 
 ```python
+# Parallel PDF conversion (4 workers)
+convert(
+    input="/path/to/pdfs/",
+    output="/path/to/output/",
+    format="markdown",
+    filter="pdf",
+    recursive=True,
+    parallel=4  # Each PDF runs in isolated subprocess
+)
+
+# Response shows parallel PDF info:
+# {"total": 10, "converted": 10, "pdf_files": 10, "pdf_parallel": true, "pdf_workers": 4}
+
 # Convert markdown files in parallel (4 workers)
 convert(
     input="/path/to/markdown_docs/",
@@ -133,18 +145,20 @@ convert(
     parallel=4
 )
 
-# Mixed formats: PDFs sequential, others parallel
+# Mixed formats: all parallel
 convert(
     input="/path/to/mixed_docs/",  # Contains PDFs and markdown
     output="/path/to/output/",
     format="html",
     recursive=True,
-    parallel=4  # Only applies to non-PDF files
+    parallel=4
 )
 
 # Response shows breakdown:
-# {"total": 50, "converted": 50, "pdf_files": 10, "parallel_workers": 4, "parallel_files": 40}
+# {"total": 50, "converted": 50, "pdf_files": 10, "pdf_parallel": true, "pdf_workers": 4, "parallel_workers": 4, "parallel_files": 40}
 ```
+
+**Note:** Parallel PDF processing requires sufficient CPU and RAM. On resource-constrained systems, use `parallel=1` (default) for reliable sequential processing.
 
 **Skip Existing Files:**
 
@@ -310,11 +324,20 @@ All non-PDF conversions use pandoc directly, which handles:
 - Cross-references
 - Citations (in some formats)
 
+### Parallel PDF Processing
+
+PDF parallelism uses subprocess isolation: each PDF conversion runs in a completely separate Python process. This bypasses pdf2docx's internal locking that prevents thread-based parallelism.
+
+- Each subprocess: ~100-200MB RAM + CPU usage
+- 4 parallel workers: ~400-800MB RAM, 4 CPU cores
+- 8 parallel workers: ~800MB-1.6GB RAM, 8 CPU cores
+
 ### Limitations
 
 - Complex PDF layouts may not convert perfectly
 - Some formatting may be lost in conversion
 - Scanned PDFs (images) require OCR first (not included)
+- Parallel PDF processing requires adequate system resources
 
 ## Files
 
