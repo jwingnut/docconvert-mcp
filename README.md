@@ -7,7 +7,7 @@ FastMCP server for universal document format conversion. Convert PDFs, Word docs
 - **Universal conversion** - Convert between 20+ document formats
 - **PDF support** - Uses pdf2docx for accurate PDF extraction, then pandoc
 - **Batch processing** - Convert entire directories with mixed formats
-- **Parallel processing** - Optional multiprocessing for faster batch jobs (bypasses Python GIL)
+- **Smart parallelism** - Parallel processing for non-PDF files (PDFs use sequential due to pdf2docx limitations)
 - **Recursive mode** - Process nested folder structures
 - **Format filtering** - Convert only specific file types (e.g., just PDFs)
 
@@ -117,26 +117,33 @@ convert(
 | `parallel` | int | Number of parallel workers (default 1 = sequential, max 16) |
 | `overwrite` | bool | If True (default), overwrite existing files. If False, skip existing. |
 
-**Parallel Processing:**
+**Parallel Processing (non-PDF files only):**
 
-For faster batch conversion, use the `parallel` parameter:
+PDF files are always processed sequentially because pdf2docx has internal locking that prevents parallelism.
+Non-PDF files (markdown, docx, html, etc.) can be processed in parallel:
 
 ```python
-# Convert 50 PDFs using 4 parallel workers (~4x faster)
+# Convert markdown files in parallel (4 workers)
 convert(
-    input="/path/to/many_pdfs/",
+    input="/path/to/markdown_docs/",
     output="/path/to/output/",
-    format="markdown",
-    filter="pdf",
+    format="html",
+    filter="md",
     recursive=True,
     parallel=4
 )
 
-# Recommended settings:
-# - parallel=1: Default, sequential (safest)
-# - parallel=2-4: Good for most systems
-# - parallel=4-8: For systems with many CPU cores
-# - parallel=8-16: Power users with fast storage
+# Mixed formats: PDFs sequential, others parallel
+convert(
+    input="/path/to/mixed_docs/",  # Contains PDFs and markdown
+    output="/path/to/output/",
+    format="html",
+    recursive=True,
+    parallel=4  # Only applies to non-PDF files
+)
+
+# Response shows breakdown:
+# {"total": 50, "converted": 50, "pdf_files": 10, "parallel_workers": 4, "parallel_files": 40}
 ```
 
 **Skip Existing Files:**

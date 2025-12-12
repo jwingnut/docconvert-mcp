@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastmcp import FastMCP
 from pdf2docx import Converter
 
@@ -102,12 +102,16 @@ def _convert_task(args: tuple) -> dict:
 
 
 @mcp.tool
-def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True, threads: bool = False) -> dict:
+def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True) -> dict:
     """
     Convert document(s) to a single output format.
 
     Handles mixed input formats - PDFs, DOCX, HTML, Markdown, etc. all get converted
     to the specified output format. Directory structure is preserved in output.
+
+    NOTE: For PDF files, sequential processing is used regardless of parallel setting
+    because pdf2docx has internal locking that prevents true parallelism.
+    Parallel processing only helps for non-PDF formats (uses pandoc).
 
     Args:
         input: Input file or directory path
@@ -115,9 +119,8 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         format: Target format for ALL outputs (odt, docx, html, markdown, latex, epub, rst, pdf, rtf, txt, etc.)
         filter: Optional - only convert files with this extension (e.g., 'pdf'). If omitted, converts all supported formats.
         recursive: If True, traverse subdirectories and convert all files found
-        parallel: Number of parallel workers (default 1 = sequential). Set 2-8 for faster batch processing.
+        parallel: Number of parallel workers (default 1 = sequential). Only effective for non-PDF files.
         overwrite: If True (default), overwrite existing output files. If False, skip files that already exist.
-        threads: If True, use ThreadPoolExecutor instead of ProcessPoolExecutor. Better for network drives (OneDrive, NFS).
 
     Returns:
         Conversion result with output path(s)
@@ -129,17 +132,14 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         # Directory - convert all supported files to ODT
         convert("/path/to/mixed_docs/", "/path/to/output/", "odt", recursive=True)
 
-        # Directory - only convert PDFs to markdown
+        # Directory - only convert PDFs to markdown (sequential is fastest for PDFs)
         convert("/path/to/docs/", "/path/to/md_output/", "markdown", filter="pdf", recursive=True)
 
-        # Directory - parallel conversion (4 workers)
-        convert("/path/to/docs/", "/path/to/output/", "markdown", recursive=True, parallel=4)
+        # Directory - parallel conversion for non-PDF files (4 workers)
+        convert("/path/to/docs/", "/path/to/output/", "html", filter="md", recursive=True, parallel=4)
 
         # Skip existing files (resume interrupted batch)
         convert("/path/to/docs/", "/path/to/output/", "odt", recursive=True, overwrite=False)
-
-        # Use threads for network drives (OneDrive, etc.)
-        convert("/mnt/onedrive/docs/", "/mnt/onedrive/output/", "markdown", parallel=4, threads=True)
     """
     src = Path(input)
     dst = Path(output)
@@ -201,64 +201,62 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
     failed = 0
     skipped = 0
 
-    # Parallel or sequential processing
+    # Split tasks into PDF and non-PDF (pdf2docx doesn't parallelize well)
+    pdf_tasks = [t for t in tasks if t[0].suffix.lower() == '.pdf']
+    other_tasks = [t for t in tasks if t[0].suffix.lower() != '.pdf']
+
     num_workers = max(1, min(parallel, 16))  # Clamp between 1-16
 
-    if num_workers > 1 and len(tasks) > 1:
-        # Choose executor based on threads parameter
-        if threads:
-            # Force ThreadPoolExecutor (better for network drives)
-            executor_classes = [ThreadPoolExecutor]
+    # Process PDFs sequentially (pdf2docx has internal locking)
+    for task in pdf_tasks:
+        result = _convert_task(task)
+        results.append(result)
+        if result.get("skipped"):
+            skipped += 1
+        elif result.get("success"):
+            converted += 1
         else:
-            # Try ProcessPoolExecutor first, fall back to ThreadPoolExecutor
-            executor_classes = [ProcessPoolExecutor, ThreadPoolExecutor]
-        executor_used = None
+            failed += 1
 
-        for ExecutorClass in executor_classes:
-            try:
-                with ExecutorClass(max_workers=num_workers) as executor:
-                    executor_used = ExecutorClass.__name__
-                    futures = {executor.submit(_convert_task, task): task for task in tasks}
-                    for future in as_completed(futures):
-                        try:
-                            result = future.result(timeout=300)  # 5 min timeout per file
-                            results.append(result)
-                            if result.get("skipped"):
-                                skipped += 1
-                            elif result.get("success"):
-                                converted += 1
-                            else:
-                                failed += 1
-                        except Exception as e:
-                            # Individual task failed
-                            task = futures[future]
-                            results.append({
-                                "input": str(task[0]),
-                                "input_format": task[0].suffix.lower(),
-                                "output": None,
-                                "success": False,
-                                "error": f"Task failed: {str(e)}"
-                            })
+    # Process non-PDFs in parallel if requested
+    if num_workers > 1 and len(other_tasks) > 1:
+        try:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(_convert_task, task): task for task in other_tasks}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result(timeout=300)
+                        results.append(result)
+                        if result.get("skipped"):
+                            skipped += 1
+                        elif result.get("success"):
+                            converted += 1
+                        else:
                             failed += 1
-                # Success - break out of executor loop
-                break
-            except Exception as e:
-                if ExecutorClass == ProcessPoolExecutor:
-                    # ProcessPool failed, will try ThreadPool
-                    results = []
-                    converted = 0
-                    failed = 0
-                    skipped = 0
-                    continue
+                    except Exception as e:
+                        task = futures[future]
+                        results.append({
+                            "input": str(task[0]),
+                            "input_format": task[0].suffix.lower(),
+                            "output": None,
+                            "success": False,
+                            "error": f"Task failed: {str(e)}"
+                        })
+                        failed += 1
+        except Exception as e:
+            # Fallback to sequential if parallel fails
+            for task in other_tasks:
+                result = _convert_task(task)
+                results.append(result)
+                if result.get("skipped"):
+                    skipped += 1
+                elif result.get("success"):
+                    converted += 1
                 else:
-                    # Both failed, raise
-                    raise
-
-        # Sort results by input path for consistent output
-        results.sort(key=lambda x: x["input"])
+                    failed += 1
     else:
-        # Sequential processing (default)
-        for task in tasks:
+        # Sequential processing for non-PDFs
+        for task in other_tasks:
             result = _convert_task(task)
             results.append(result)
             if result.get("skipped"):
@@ -267,6 +265,9 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
                 converted += 1
             else:
                 failed += 1
+
+    # Sort results by input path for consistent output
+    results.sort(key=lambda x: x["input"])
 
     response = {
         "success": True,
@@ -279,14 +280,11 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
 
     if skipped > 0:
         response["skipped"] = skipped
-    if num_workers > 1:
+    if len(pdf_tasks) > 0:
+        response["pdf_files"] = len(pdf_tasks)
+    if num_workers > 1 and len(other_tasks) > 1:
         response["parallel_workers"] = num_workers
-        # Report which executor was used (ProcessPool or ThreadPool fallback)
-        try:
-            if executor_used:
-                response["executor"] = executor_used
-        except NameError:
-            pass
+        response["parallel_files"] = len(other_tasks)
 
     return response
 
