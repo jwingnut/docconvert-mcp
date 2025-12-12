@@ -21,6 +21,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastmcp import FastMCP
 from pdf2docx import Converter
 
+# Optional: pymupdf4llm for better OCR with layout preservation
+try:
+    import pymupdf4llm
+    import fitz
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+
 mcp = FastMCP("docconvert")
 
 # Supported input extensions
@@ -87,7 +95,61 @@ def ocr_pdf(src: Path, dst: Path = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False) -> dict:
+def ocr_with_layout(src: Path, dst: Path, fmt: str) -> dict:
+    """
+    OCR a PDF using PyMuPDF with layout preservation.
+
+    Better for documents with tables and complex layouts.
+    Uses pymupdf4llm for markdown output, fitz for other formats.
+
+    Args:
+        src: Input PDF path
+        dst: Output file path
+        fmt: Target format (markdown, html, txt, etc.)
+
+    Returns:
+        dict with success status and output path
+    """
+    if not HAS_PYMUPDF:
+        return {"success": False, "error": "pymupdf4llm not installed. Run: pip install pymupdf4llm"}
+
+    try:
+        if fmt in ("markdown", "md"):
+            # Use pymupdf4llm for best markdown output with tables
+            md_text = pymupdf4llm.to_markdown(str(src))
+            dst.write_text(md_text)
+        else:
+            # Use fitz OCR then extract text
+            doc = fitz.open(str(src))
+            all_text = []
+            for page in doc:
+                tp = page.get_textpage_ocr(language='eng', dpi=300, full=True)
+                if fmt == "html":
+                    all_text.append(page.get_text('html', textpage=tp))
+                else:
+                    all_text.append(page.get_text('text', textpage=tp))
+            doc.close()
+
+            content = '\n'.join(all_text)
+
+            if fmt == "html":
+                dst.write_text(content)
+            elif fmt in ("plain", "txt"):
+                dst.write_text(content)
+            else:
+                # For other formats, write as txt then convert with pandoc
+                with tempfile.NamedTemporaryFile(suffix='.txt', delete=False, mode='w') as tmp:
+                    tmp.write(content)
+                    txt_path = tmp.name
+                subprocess.run(['pandoc', txt_path, '-o', str(dst)], check=True, capture_output=True)
+                os.unlink(txt_path)
+
+        return {"success": True, "output": str(dst)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False, ocr_layout: bool = False) -> dict:
     """Convert a single file to target format (in-process, for non-PDFs or sequential)."""
     fmt = fmt.lower()
     fmt = {"md": "markdown", "txt": "plain", "tex": "latex"}.get(fmt, fmt)
@@ -95,7 +157,11 @@ def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False) -> dict:
 
     try:
         if src.suffix.lower() == '.pdf':
-            # OCR scanned PDFs if requested - use direct text extraction
+            # OCR with layout preservation (PyMuPDF) - best for tables
+            if ocr_layout:
+                return ocr_with_layout(src, dst, fmt)
+
+            # Basic OCR (ocrmypdf + pdftotext)
             if ocr:
                 ocr_result = ocr_pdf(src)
                 if not ocr_result.get("success"):
@@ -103,7 +169,6 @@ def convert_file(src: Path, dst: Path, fmt: str, ocr: bool = False) -> dict:
                 ocr_tmp = ocr_result["output"]
 
                 # Extract text from OCR'd PDF using pdftotext, then convert with pandoc
-                # pdf2docx doesn't read OCR text layers well
                 with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as txt_tmp:
                     txt_path = txt_tmp.name
                 subprocess.run(['pdftotext', '-layout', ocr_tmp, txt_path], check=True, capture_output=True)
@@ -211,7 +276,7 @@ except Exception as e:
 
 def _convert_task(args: tuple) -> dict:
     """Worker function for parallel conversion (non-PDF)."""
-    src_file, out_file, fmt, overwrite, ocr = args
+    src_file, out_file, fmt, overwrite, ocr, ocr_layout = args
 
     # Skip if output exists and overwrite is False
     if not overwrite and out_file.exists():
@@ -224,7 +289,7 @@ def _convert_task(args: tuple) -> dict:
         }
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    result = convert_file(src_file, out_file, fmt, ocr=ocr)
+    result = convert_file(src_file, out_file, fmt, ocr=ocr, ocr_layout=ocr_layout)
     return {
         "input": str(src_file),
         "input_format": src_file.suffix.lower(),
@@ -237,7 +302,7 @@ def _convert_task(args: tuple) -> dict:
 
 def _convert_pdf_task(args: tuple) -> dict:
     """Worker function for parallel PDF conversion using subprocess isolation."""
-    src_file, out_file, fmt, overwrite, ocr = args
+    src_file, out_file, fmt, overwrite, ocr, ocr_layout = args
 
     # Skip if output exists and overwrite is False
     if not overwrite and out_file.exists():
@@ -250,7 +315,12 @@ def _convert_pdf_task(args: tuple) -> dict:
         }
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    result = convert_pdf_subprocess(src_file, out_file, fmt, ocr=ocr)
+
+    # For ocr_layout, use in-process PyMuPDF (can't easily subprocess)
+    if ocr_layout:
+        result = ocr_with_layout(src_file, out_file, fmt)
+    else:
+        result = convert_pdf_subprocess(src_file, out_file, fmt, ocr=ocr)
     return {
         "input": str(src_file),
         "input_format": src_file.suffix.lower(),
@@ -262,7 +332,7 @@ def _convert_pdf_task(args: tuple) -> dict:
 
 
 @mcp.tool
-def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True, ocr: bool = False) -> dict:
+def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True, ocr: bool = False, ocr_layout: bool = False) -> dict:
     """
     Convert document(s) to a single output format.
 
@@ -278,8 +348,10 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         parallel: Number of parallel workers (default 1 = sequential). For PDFs, uses subprocess isolation
                   to bypass pdf2docx internal locking and achieve true parallelism. Requires adequate CPU/RAM.
         overwrite: If True (default), overwrite existing output files. If False, skip files that already exist.
-        ocr: If True, run OCR on scanned PDFs before conversion. Uses Tesseract via ocrmypdf.
-             Automatically skips PDFs that already have text. Requires: pip install ocrmypdf, apt install tesseract-ocr
+        ocr: If True, run basic OCR on scanned PDFs (ocrmypdf + pdftotext). Fast but loses layout.
+             Requires: pip install ocrmypdf, apt install tesseract-ocr
+        ocr_layout: If True, run OCR with layout preservation using PyMuPDF. Better for tables and complex
+                    layouts but slower. Requires: pip install pymupdf4llm. Overrides ocr parameter.
 
     Returns:
         Conversion result with output path(s)
@@ -288,17 +360,17 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         # Single file
         convert("/path/to/doc.pdf", "/path/to/doc.odt", "odt")
 
-        # Scanned PDF with OCR
-        convert("/path/to/scanned.pdf", "/path/to/scanned.md", "markdown", ocr=True)
+        # Scanned PDF with basic OCR (fast)
+        convert("/path/to/scanned.pdf", "/path/to/scanned.txt", "txt", ocr=True)
 
-        # Batch OCR conversion for scanned documents
-        convert("/path/to/scanned_docs/", "/path/to/output/", "markdown", filter="pdf", ocr=True, recursive=True)
+        # Scanned PDF with layout-preserving OCR (better for tables)
+        convert("/path/to/scanned.pdf", "/path/to/scanned.md", "markdown", ocr_layout=True)
+
+        # Batch OCR conversion with layout preservation
+        convert("/path/to/scanned_docs/", "/path/to/output/", "markdown", filter="pdf", ocr_layout=True, recursive=True)
 
         # Directory - parallel PDF conversion (4 workers) - requires sufficient CPU/RAM
         convert("/path/to/docs/", "/path/to/md_output/", "markdown", filter="pdf", recursive=True, parallel=4)
-
-        # Directory - parallel conversion for mixed files (4 workers)
-        convert("/path/to/docs/", "/path/to/output/", "html", recursive=True, parallel=4)
 
         # Skip existing files (resume interrupted batch)
         convert("/path/to/docs/", "/path/to/output/", "odt", recursive=True, overwrite=False)
@@ -323,10 +395,10 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         if not overwrite and dst.exists():
             return {"success": True, "output": str(dst), "skipped": True, "message": "Output file exists, skipped"}
 
-        result = convert_file(src, dst, fmt, ocr=ocr)
+        result = convert_file(src, dst, fmt, ocr=ocr, ocr_layout=ocr_layout)
         result["skipped"] = False
-        if ocr and src.suffix.lower() == '.pdf':
-            result["ocr"] = True
+        if (ocr or ocr_layout) and src.suffix.lower() == '.pdf':
+            result["ocr"] = "layout" if ocr_layout else True
         return result
 
     # Directory conversion
@@ -358,7 +430,7 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
     for f in sorted(files):
         rel_path = f.relative_to(src)
         out_file = dst / rel_path.with_suffix(ext)
-        tasks.append((f, out_file, fmt, overwrite, ocr))
+        tasks.append((f, out_file, fmt, overwrite, ocr, ocr_layout))
 
     results = []
     converted = 0
@@ -484,7 +556,9 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         response["skipped"] = skipped
     if len(pdf_tasks) > 0:
         response["pdf_files"] = len(pdf_tasks)
-        if ocr:
+        if ocr_layout:
+            response["ocr"] = "layout"
+        elif ocr:
             response["ocr"] = True
         if num_workers > 1 and len(pdf_tasks) > 1:
             response["pdf_parallel"] = True

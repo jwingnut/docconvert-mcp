@@ -334,35 +334,52 @@ PDF parallelism uses subprocess isolation: each PDF conversion runs in a complet
 
 ### OCR for Scanned PDFs
 
-Convert scanned documents using Tesseract OCR:
+Two OCR modes available:
 
+**Basic OCR (`ocr=True`)** - Fast, good for simple text extraction:
 ```python
-# Single scanned PDF
+convert(
+    input="/path/to/scanned.pdf",
+    output="/path/to/output.txt",
+    format="txt",
+    ocr=True
+)
+```
+
+**Layout-preserving OCR (`ocr_layout=True`)** - Better for tables and complex layouts:
+```python
+# Best for documents with tables
 convert(
     input="/path/to/scanned.pdf",
     output="/path/to/output.md",
     format="markdown",
-    ocr=True
+    ocr_layout=True
 )
 
-# Batch OCR conversion
+# Batch OCR with layout preservation
 convert(
     input="/path/to/scanned_docs/",
     output="/path/to/output/",
     format="markdown",
     filter="pdf",
-    ocr=True,
+    ocr_layout=True,
     recursive=True
 )
+```
 
-# Just OCR a PDF (creates searchable PDF)
+**Standalone OCR** - Create searchable PDF:
+```python
 ocr_document("/path/to/scanned.pdf", "/path/to/searchable.pdf")
 ```
 
 **OCR Requirements:**
 ```bash
+# Basic OCR
 pip install ocrmypdf
 sudo apt install tesseract-ocr
+
+# Layout-preserving OCR (recommended)
+pip install pymupdf4llm
 ```
 
 ### Limitations
