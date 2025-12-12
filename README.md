@@ -332,12 +332,45 @@ PDF parallelism uses subprocess isolation: each PDF conversion runs in a complet
 - 4 parallel workers: ~400-800MB RAM, 4 CPU cores
 - 8 parallel workers: ~800MB-1.6GB RAM, 8 CPU cores
 
+### OCR for Scanned PDFs
+
+Convert scanned documents using Tesseract OCR:
+
+```python
+# Single scanned PDF
+convert(
+    input="/path/to/scanned.pdf",
+    output="/path/to/output.md",
+    format="markdown",
+    ocr=True
+)
+
+# Batch OCR conversion
+convert(
+    input="/path/to/scanned_docs/",
+    output="/path/to/output/",
+    format="markdown",
+    filter="pdf",
+    ocr=True,
+    recursive=True
+)
+
+# Just OCR a PDF (creates searchable PDF)
+ocr_document("/path/to/scanned.pdf", "/path/to/searchable.pdf")
+```
+
+**OCR Requirements:**
+```bash
+pip install ocrmypdf
+sudo apt install tesseract-ocr
+```
+
 ### Limitations
 
 - Complex PDF layouts may not convert perfectly
 - Some formatting may be lost in conversion
-- Scanned PDFs (images) require OCR first (not included)
 - Parallel PDF processing requires adequate system resources
+- OCR quality depends on scan quality and Tesseract's capabilities
 
 ## Files
 
