@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from fastmcp import FastMCP
 from pdf2docx import Converter
 
@@ -102,7 +102,7 @@ def _convert_task(args: tuple) -> dict:
 
 
 @mcp.tool
-def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True) -> dict:
+def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True, threads: bool = False) -> dict:
     """
     Convert document(s) to a single output format.
 
@@ -117,6 +117,7 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         recursive: If True, traverse subdirectories and convert all files found
         parallel: Number of parallel workers (default 1 = sequential). Set 2-8 for faster batch processing.
         overwrite: If True (default), overwrite existing output files. If False, skip files that already exist.
+        threads: If True, use ThreadPoolExecutor instead of ProcessPoolExecutor. Better for network drives (OneDrive, NFS).
 
     Returns:
         Conversion result with output path(s)
@@ -136,6 +137,9 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
 
         # Skip existing files (resume interrupted batch)
         convert("/path/to/docs/", "/path/to/output/", "odt", recursive=True, overwrite=False)
+
+        # Use threads for network drives (OneDrive, etc.)
+        convert("/mnt/onedrive/docs/", "/mnt/onedrive/output/", "markdown", parallel=4, threads=True)
     """
     src = Path(input)
     dst = Path(output)
@@ -201,18 +205,55 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
     num_workers = max(1, min(parallel, 16))  # Clamp between 1-16
 
     if num_workers > 1 and len(tasks) > 1:
-        # Parallel processing (true multiprocessing, bypasses GIL)
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(_convert_task, task): task for task in tasks}
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                if result.get("skipped"):
-                    skipped += 1
-                elif result.get("success"):
-                    converted += 1
+        # Choose executor based on threads parameter
+        if threads:
+            # Force ThreadPoolExecutor (better for network drives)
+            executor_classes = [ThreadPoolExecutor]
+        else:
+            # Try ProcessPoolExecutor first, fall back to ThreadPoolExecutor
+            executor_classes = [ProcessPoolExecutor, ThreadPoolExecutor]
+        executor_used = None
+
+        for ExecutorClass in executor_classes:
+            try:
+                with ExecutorClass(max_workers=num_workers) as executor:
+                    executor_used = ExecutorClass.__name__
+                    futures = {executor.submit(_convert_task, task): task for task in tasks}
+                    for future in as_completed(futures):
+                        try:
+                            result = future.result(timeout=300)  # 5 min timeout per file
+                            results.append(result)
+                            if result.get("skipped"):
+                                skipped += 1
+                            elif result.get("success"):
+                                converted += 1
+                            else:
+                                failed += 1
+                        except Exception as e:
+                            # Individual task failed
+                            task = futures[future]
+                            results.append({
+                                "input": str(task[0]),
+                                "input_format": task[0].suffix.lower(),
+                                "output": None,
+                                "success": False,
+                                "error": f"Task failed: {str(e)}"
+                            })
+                            failed += 1
+                # Success - break out of executor loop
+                break
+            except Exception as e:
+                if ExecutorClass == ProcessPoolExecutor:
+                    # ProcessPool failed, will try ThreadPool
+                    results = []
+                    converted = 0
+                    failed = 0
+                    skipped = 0
+                    continue
                 else:
-                    failed += 1
+                    # Both failed, raise
+                    raise
+
         # Sort results by input path for consistent output
         results.sort(key=lambda x: x["input"])
     else:
@@ -240,6 +281,12 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         response["skipped"] = skipped
     if num_workers > 1:
         response["parallel_workers"] = num_workers
+        # Report which executor was used (ProcessPool or ThreadPool fallback)
+        try:
+            if executor_used:
+                response["executor"] = executor_used
+        except NameError:
+            pass
 
     return response
 
