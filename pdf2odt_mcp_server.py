@@ -77,7 +77,18 @@ def convert_file(src: Path, dst: Path, fmt: str) -> dict:
 
 def _convert_task(args: tuple) -> dict:
     """Worker function for parallel conversion."""
-    src_file, out_file, fmt, src_base = args
+    src_file, out_file, fmt, overwrite = args
+
+    # Skip if output exists and overwrite is False
+    if not overwrite and out_file.exists():
+        return {
+            "input": str(src_file),
+            "input_format": src_file.suffix.lower(),
+            "output": str(out_file),
+            "success": True,
+            "skipped": True
+        }
+
     out_file.parent.mkdir(parents=True, exist_ok=True)
     result = convert_file(src_file, out_file, fmt)
     return {
@@ -85,12 +96,13 @@ def _convert_task(args: tuple) -> dict:
         "input_format": src_file.suffix.lower(),
         "output": str(out_file) if result.get("success") else None,
         "success": result.get("success"),
+        "skipped": False,
         "error": result.get("error")
     }
 
 
 @mcp.tool
-def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1) -> dict:
+def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1, overwrite: bool = True) -> dict:
     """
     Convert document(s) to a single output format.
 
@@ -104,6 +116,7 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         filter: Optional - only convert files with this extension (e.g., 'pdf'). If omitted, converts all supported formats.
         recursive: If True, traverse subdirectories and convert all files found
         parallel: Number of parallel workers (default 1 = sequential). Set 2-8 for faster batch processing.
+        overwrite: If True (default), overwrite existing output files. If False, skip files that already exist.
 
     Returns:
         Conversion result with output path(s)
@@ -120,6 +133,9 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
 
         # Directory - parallel conversion (4 workers)
         convert("/path/to/docs/", "/path/to/output/", "markdown", recursive=True, parallel=4)
+
+        # Skip existing files (resume interrupted batch)
+        convert("/path/to/docs/", "/path/to/output/", "odt", recursive=True, overwrite=False)
     """
     src = Path(input)
     dst = Path(output)
@@ -136,7 +152,14 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
             dst = dst / src.with_suffix(ext).name
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
-        return convert_file(src, dst, fmt)
+
+        # Check overwrite for single file
+        if not overwrite and dst.exists():
+            return {"success": True, "output": str(dst), "skipped": True, "message": "Output file exists, skipped"}
+
+        result = convert_file(src, dst, fmt)
+        result["skipped"] = False
+        return result
 
     # Directory conversion
     if not src.is_dir():
@@ -167,11 +190,12 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
     for f in sorted(files):
         rel_path = f.relative_to(src)
         out_file = dst / rel_path.with_suffix(ext)
-        tasks.append((f, out_file, fmt, src))
+        tasks.append((f, out_file, fmt, overwrite))
 
     results = []
     converted = 0
     failed = 0
+    skipped = 0
 
     # Parallel or sequential processing
     num_workers = max(1, min(parallel, 16))  # Clamp between 1-16
@@ -183,7 +207,9 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
-                if result.get("success"):
+                if result.get("skipped"):
+                    skipped += 1
+                elif result.get("success"):
                     converted += 1
                 else:
                     failed += 1
@@ -194,20 +220,28 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         for task in tasks:
             result = _convert_task(task)
             results.append(result)
-            if result.get("success"):
+            if result.get("skipped"):
+                skipped += 1
+            elif result.get("success"):
                 converted += 1
             else:
                 failed += 1
 
-    return {
+    response = {
         "success": True,
         "total": len(files),
         "converted": converted,
         "failed": failed,
         "output_format": fmt,
-        "parallel_workers": num_workers if num_workers > 1 else None,
         "results": results
     }
+
+    if skipped > 0:
+        response["skipped"] = skipped
+    if num_workers > 1:
+        response["parallel_workers"] = num_workers
+
+    return response
 
 
 @mcp.tool

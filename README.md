@@ -115,6 +115,7 @@ convert(
 | `filter` | string | Optional - only convert files with this extension |
 | `recursive` | bool | If True, process subdirectories |
 | `parallel` | int | Number of parallel workers (default 1 = sequential, max 16) |
+| `overwrite` | bool | If True (default), overwrite existing files. If False, skip existing. |
 
 **Parallel Processing:**
 
@@ -136,6 +137,24 @@ convert(
 # - parallel=2-4: Good for most systems
 # - parallel=4-8: For systems with many CPU cores
 # - parallel=8-16: Power users with fast storage
+```
+
+**Skip Existing Files:**
+
+Use `overwrite=False` to skip files that already exist (useful for resuming interrupted batches):
+
+```python
+# Resume an interrupted batch - only convert files not yet done
+convert(
+    input="/path/to/docs/",
+    output="/path/to/output/",
+    format="markdown",
+    recursive=True,
+    overwrite=False  # Skip existing output files
+)
+
+# Response includes skipped count:
+# {"total": 100, "converted": 25, "skipped": 75, "failed": 0}
 ```
 
 ### `formats`
