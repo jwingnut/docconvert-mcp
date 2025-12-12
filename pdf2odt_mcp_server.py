@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from fastmcp import FastMCP
 from pdf2docx import Converter
 
@@ -74,8 +75,22 @@ def convert_file(src: Path, dst: Path, fmt: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def _convert_task(args: tuple) -> dict:
+    """Worker function for parallel conversion."""
+    src_file, out_file, fmt, src_base = args
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    result = convert_file(src_file, out_file, fmt)
+    return {
+        "input": str(src_file),
+        "input_format": src_file.suffix.lower(),
+        "output": str(out_file) if result.get("success") else None,
+        "success": result.get("success"),
+        "error": result.get("error")
+    }
+
+
 @mcp.tool
-def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False) -> dict:
+def convert(input: str, output: str, format: str, filter: str = None, recursive: bool = False, parallel: int = 1) -> dict:
     """
     Convert document(s) to a single output format.
 
@@ -88,6 +103,7 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         format: Target format for ALL outputs (odt, docx, html, markdown, latex, epub, rst, pdf, rtf, txt, etc.)
         filter: Optional - only convert files with this extension (e.g., 'pdf'). If omitted, converts all supported formats.
         recursive: If True, traverse subdirectories and convert all files found
+        parallel: Number of parallel workers (default 1 = sequential). Set 2-8 for faster batch processing.
 
     Returns:
         Conversion result with output path(s)
@@ -101,6 +117,9 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
 
         # Directory - only convert PDFs to markdown
         convert("/path/to/docs/", "/path/to/md_output/", "markdown", filter="pdf", recursive=True)
+
+        # Directory - parallel conversion (4 workers)
+        convert("/path/to/docs/", "/path/to/output/", "markdown", recursive=True, parallel=4)
     """
     src = Path(input)
     dst = Path(output)
@@ -143,29 +162,42 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
     if not files:
         return {"success": True, "message": "No supported files found", "converted": 0, "failed": 0}
 
+    # Prepare conversion tasks
+    tasks = []
+    for f in sorted(files):
+        rel_path = f.relative_to(src)
+        out_file = dst / rel_path.with_suffix(ext)
+        tasks.append((f, out_file, fmt, src))
+
     results = []
     converted = 0
     failed = 0
 
-    for f in sorted(files):
-        # Preserve relative directory structure
-        rel_path = f.relative_to(src)
-        out_file = dst / rel_path.with_suffix(ext)
-        out_file.parent.mkdir(parents=True, exist_ok=True)
+    # Parallel or sequential processing
+    num_workers = max(1, min(parallel, 16))  # Clamp between 1-16
 
-        result = convert_file(f, out_file, fmt)
-        results.append({
-            "input": str(f),
-            "input_format": f.suffix.lower(),
-            "output": str(out_file) if result.get("success") else None,
-            "success": result.get("success"),
-            "error": result.get("error")
-        })
-
-        if result.get("success"):
-            converted += 1
-        else:
-            failed += 1
+    if num_workers > 1 and len(tasks) > 1:
+        # Parallel processing (true multiprocessing, bypasses GIL)
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_convert_task, task): task for task in tasks}
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                if result.get("success"):
+                    converted += 1
+                else:
+                    failed += 1
+        # Sort results by input path for consistent output
+        results.sort(key=lambda x: x["input"])
+    else:
+        # Sequential processing (default)
+        for task in tasks:
+            result = _convert_task(task)
+            results.append(result)
+            if result.get("success"):
+                converted += 1
+            else:
+                failed += 1
 
     return {
         "success": True,
@@ -173,6 +205,7 @@ def convert(input: str, output: str, format: str, filter: str = None, recursive:
         "converted": converted,
         "failed": failed,
         "output_format": fmt,
+        "parallel_workers": num_workers if num_workers > 1 else None,
         "results": results
     }
 

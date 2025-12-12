@@ -7,6 +7,7 @@ FastMCP server for universal document format conversion. Convert PDFs, Word docs
 - **Universal conversion** - Convert between 20+ document formats
 - **PDF support** - Uses pdf2docx for accurate PDF extraction, then pandoc
 - **Batch processing** - Convert entire directories with mixed formats
+- **Parallel processing** - Optional multiprocessing for faster batch jobs (bypasses Python GIL)
 - **Recursive mode** - Process nested folder structures
 - **Format filtering** - Convert only specific file types (e.g., just PDFs)
 
@@ -113,6 +114,29 @@ convert(
 | `format` | string | Target format (odt, docx, markdown, html, etc.) |
 | `filter` | string | Optional - only convert files with this extension |
 | `recursive` | bool | If True, process subdirectories |
+| `parallel` | int | Number of parallel workers (default 1 = sequential, max 16) |
+
+**Parallel Processing:**
+
+For faster batch conversion, use the `parallel` parameter:
+
+```python
+# Convert 50 PDFs using 4 parallel workers (~4x faster)
+convert(
+    input="/path/to/many_pdfs/",
+    output="/path/to/output/",
+    format="markdown",
+    filter="pdf",
+    recursive=True,
+    parallel=4
+)
+
+# Recommended settings:
+# - parallel=1: Default, sequential (safest)
+# - parallel=2-4: Good for most systems
+# - parallel=4-8: For systems with many CPU cores
+# - parallel=8-16: Power users with fast storage
+```
 
 ### `formats`
 
