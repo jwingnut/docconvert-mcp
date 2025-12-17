@@ -42,15 +42,13 @@ Claude Code
 ```bash
 # Install pandoc
 sudo apt install pandoc
-
-# Install pdf2docx
-pip install pdf2docx
 ```
 
 ### Setup
 
 ```bash
-cd /path/to/pdf2odt-mcp
+git clone https://github.com/jwingnut/docconvert-mcp.git
+cd docconvert-mcp
 uv venv
 source .venv/bin/activate
 uv pip install fastmcp pdf2docx
@@ -58,14 +56,48 @@ uv pip install fastmcp pdf2docx
 
 ### Configure Claude Code
 
-Add to `.mcp.json`:
+Create or edit `.mcp.json` in your project directory (or a parent directory for broader scope):
 
 ```json
 {
   "mcpServers": {
     "docconvert": {
-      "command": "/path/to/pdf2odt-mcp/.venv/bin/fastmcp",
-      "args": ["run", "/path/to/pdf2odt-mcp/pdf2odt_mcp_server.py"]
+      "command": "/path/to/docconvert-mcp/.venv/bin/python",
+      "args": ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+    }
+  }
+}
+```
+
+Then enable the server in `.claude/settings.local.json`:
+
+```json
+{
+  "enabledMcpjsonServers": ["docconvert"]
+}
+```
+
+### Configure Codex CLI
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.docconvert]
+command = "/path/to/docconvert-mcp/.venv/bin/python"
+args = ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+startup_timeout_sec = 30
+```
+
+### Alternative: Using fastmcp run
+
+You can also run via the `fastmcp` CLI with `--no-banner` to suppress output:
+
+```json
+{
+  "mcpServers": {
+    "docconvert": {
+      "command": "/path/to/docconvert-mcp/.venv/bin/fastmcp",
+      "args": ["run", "--no-banner", "/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
     }
   }
 }

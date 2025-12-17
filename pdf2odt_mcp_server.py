@@ -1041,4 +1041,8 @@ def extract_fulltext(input: str, output: str = None, grobid_server: str = None) 
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import sys
+    import logging
+    # Redirect all logging to stderr to keep stdout clean for MCP JSON-RPC
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    mcp.run(show_banner=False)
