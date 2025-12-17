@@ -346,4 +346,8 @@ def list_convertible(path: str, recursive: bool = False) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import sys
+    import logging
+    # Redirect all logging to stderr to keep stdout clean for MCP JSON-RPC
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    mcp.run(show_banner=False)
