@@ -54,7 +54,10 @@ source .venv/bin/activate
 uv pip install fastmcp pdf2docx
 ```
 
-### Configure Claude Code
+## MCP Client Configuration
+
+<details>
+  <summary><strong>Claude Code CLI</strong></summary>
 
 Create or edit `.mcp.json` in your project directory (or a parent directory for broader scope):
 
@@ -77,7 +80,31 @@ Then enable the server in `.claude/settings.local.json`:
 }
 ```
 
-### Configure Codex CLI
+</details>
+
+<details>
+  <summary><strong>Claude Desktop</strong></summary>
+
+Add to your `claude_desktop_config.json`:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "docconvert": {
+      "command": "/path/to/docconvert-mcp/.venv/bin/python",
+      "args": ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+  <summary><strong>Codex CLI</strong></summary>
 
 Add to `~/.codex/config.toml`:
 
@@ -88,7 +115,82 @@ args = ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
 startup_timeout_sec = 30
 ```
 
-### Alternative: Using fastmcp run
+</details>
+
+<details>
+  <summary><strong>Cursor</strong></summary>
+
+Add to your Cursor MCP settings (Settings → MCP → Add Server):
+
+```json
+{
+  "mcpServers": {
+    "docconvert": {
+      "command": "/path/to/docconvert-mcp/.venv/bin/python",
+      "args": ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+  <summary><strong>Windsurf</strong></summary>
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "docconvert": {
+      "command": "/path/to/docconvert-mcp/.venv/bin/python",
+      "args": ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+  <summary><strong>Cline / Claude Dev</strong></summary>
+
+Add to your Cline MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "docconvert": {
+      "command": "/path/to/docconvert-mcp/.venv/bin/python",
+      "args": ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+  <summary><strong>Continue IDE Extension</strong></summary>
+
+Add to your Continue configuration:
+
+```json
+{
+  "mcpServers": {
+    "docconvert": {
+      "command": "/path/to/docconvert-mcp/.venv/bin/python",
+      "args": ["/path/to/docconvert-mcp/pdf2odt_mcp_server.py"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+  <summary><strong>Alternative: Using fastmcp run</strong></summary>
 
 You can also run via the `fastmcp` CLI with `--no-banner` to suppress output:
 
@@ -102,6 +204,8 @@ You can also run via the `fastmcp` CLI with `--no-banner` to suppress output:
   }
 }
 ```
+
+</details>
 
 ## Tools
 
